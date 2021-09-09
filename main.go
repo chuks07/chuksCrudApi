@@ -128,15 +128,27 @@ func updateABook(c *gin.Context){
 
 	Title := c.Param("Title")
 	var book Book
+	bookAvailable :=false
+
+	for _, value := range Books {
+
+		if value.Title == Title{
+
+			book = value
+
+			bookAvailable = true
+		}
+	}
+	if !bookAvailable {
+		c.JSON(404, gin.H{
+			"error":"no book with Title found:" + Title,
+		})
+		return
+	}
 
 	err :=c.ShouldBindJSON(&book)
 
-	if err != nil {
-		c.JSON(400, gin.H{
-			"error":"invalid data request",
-		})
-		return 
-	}
+	
 
 	filterQuery := bson.M{
 		"Title": Title,
