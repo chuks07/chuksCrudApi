@@ -13,10 +13,10 @@ import(
 	"context"
 )
 type Book struct{
-	Title string `json:"Title"`
-	Author string `json:"Author"`
-	Year int `json:"Year"`
-	Category string `json:"Category"`
+	Title string `json:"title"`
+	Author string `json:"author"`
+	Year int `json:"year"`
+	Category string `json:"category"`
 }
 var Books []Book
 var dbClient *mongo.Client 
@@ -24,7 +24,7 @@ var dbClient *mongo.Client
 func main(){
 	fmt.Println("Hello world")
 
-	ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
+	ctx, cancel:= context.WithTimeout(context.Background(),10*time.Second)
 	defer cancel()
 
 	//find Ulr address
@@ -33,29 +33,29 @@ func main(){
 		log.Fatalf("Could not connect to the db: %v\n",err)
 	}
 
-	dbClient =client
-	err = dbClient.Ping(ctx,readpref.Primary())
+	dbClient = client
+	err = dbClient.Ping(ctx, readpref.Primary())
 	if err != nil {
-		log.Fatalf("mongo db not available: %v\n",err)
+		log.Fatalf("mongo db not available: %v\n", err)
 	}
 
 	router := gin.Default()
 
 	router.POST("/createnewBook", createNewBook)
 
-	router.GET("/getBook/:Title", getSingleBook)
+	router.GET("/getBook/:title", getSingleBook)
 
 	router.GET("/getAllBooks", getAllBooks)
 
-	router.PATCH("/updateABook/:Title", updateABook)
+	router.PATCH("/updateABook/:title", updateABook)
 
-	router.DELETE("/deleteABook/:Title", deleteABook)
+	router.DELETE("/deleteABook/:title", deleteABook)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "3000"
 	}
-	_= router.Run(":" + port)
+	_ = router.Run(":" + port)
 
 
 }
@@ -64,7 +64,7 @@ func createNewBook (c *gin.Context){
 	var book Book
 
 	err := c.ShouldBindJSON(&book)
-	if err !=nil{
+	if err != nil{
 		c.JSON(400,gin.H{
 			"error": "invalid data request",
 		})
@@ -80,7 +80,6 @@ func createNewBook (c *gin.Context){
 		})
 		return 
 	} 
-	Books = append(Books, book)
 
 	c.JSON(200, gin.H{
 		"message": "new book has sucessfully been created",
@@ -88,35 +87,48 @@ func createNewBook (c *gin.Context){
 	})
 }
 func getSingleBook( c *gin.Context) {
-	Title := c.Param("Title")
+	title := c.Param("title")
 	
-	fmt.Println("Title", Title)
-
 	var book Book
 
-	bookAvailable :=false
-
-	for _, value := range Books {
-
-		if value.Title == Title{
-
-			book = value
-
-			bookAvailable = true
-		}
+	query := bson.M{
+		"title" :title,
 	}
-	if !bookAvailable {
-		c.JSON(404, gin.H{
-			"error":"no book with Title found:" + Title,
+
+	err :=dbClient.Database("ChuksLibrary").Collection("ChuksBooks").FindOne(context.Background(), query).Decode(&book)
+
+	if err != nil {
+		fmt.Println("book not found", err)
+		c.JSON(400, gin.H{
+			"error" : "no book with title found :" +title,
 		})
 		return
 	}
+	
 	c.JSON(200, gin.H{
 		"message":"success",
 		"data": book,
 	})
 }
 func getAllBooks (c *gin.Context) {
+
+	var Books []Book
+
+	cursor, err := dbClient.Database("ChuksLibrary").Collection("ChuksBooks").Find(context.Background(), bson.M{})
+
+	if err != nil{
+		c.JSON(500, gin.H{
+			"error": "could not process request, could'nt get books",
+		})
+		return
+	}
+
+	err = cursor.All(context.Background(), &Books)
+	if err != nil{
+		c.JSON(500, gin.H{
+			"error": "could not process request, could'nt get books",
+		})
+	}
 	
 	c.JSON(200, gin.H{
 		"message":"Welcome reader",
@@ -126,40 +138,28 @@ func getAllBooks (c *gin.Context) {
 
 func updateABook(c *gin.Context){
 
-	Title := c.Param("Title")
+	title := c.Param("title")
 	var book Book
-	bookAvailable :=false
-
-	for _, value := range Books {
-
-		if value.Title == Title{
-
-			book = value
-
-			bookAvailable = true
-		}
-	}
-	if !bookAvailable {
-		c.JSON(404, gin.H{
-			"error":"no book with Title found:" + Title,
-		})
-		return
-	}
 
 	err :=c.ShouldBindJSON(&book)
 
-	
+	if err != nil{
+		c.JSON(400,gin.H{
+			"error": "invalid request data",
+		})
+		return
+	}	
 
 	filterQuery := bson.M{
-		"Title": Title,
+		"title": title,
 	}
 
 	updateQuery :=bson.M{
 		"$set": bson.M{
-			"Title":book.Title,
-			"Author":book.Author,
-			"Category":book.Category,
-			"Year":book.Year,
+			"title":book.Title,
+			"author":book.Author,
+			"category":book.Category,
+			"year":book.Year,
 		},
 	}
 	// get  database name from mongodb compass
@@ -174,20 +174,24 @@ func updateABook(c *gin.Context){
 		"message":"Book has been updated",
 	})
 }
+
+// delete is still having errors
+
 func deleteABook (c *gin.Context){
-	Title := c.Param("Title")
+	title := c.Param("title")
 
 	query:= bson.M{
-		"Title": Title,
+		"title": title,
 	}
-	_,err :=dbClient.Database("ChuksLibrary").Collection("Chuksbooks").DeleteOne(context.Background(),query)
+	_, err :=dbClient.Database("ChuksLibrary").Collection("ChuksBooks").DeleteOne(context.Background(), query)
 	if err != nil{
-		c.JSON(500, gin.H{
-			"error":"could not process command, Book has not been deleted",
-		})
-		return
+			c.JSON(500, gin.H{
+				"error":"could not process command, Book has not been deleted",
+			})
+			return
 	}
 	c.JSON(200,gin.H{
 		"message":"Book has been deleted",
+
 	})
 }
