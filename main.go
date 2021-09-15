@@ -1,24 +1,53 @@
 package main
 
-import( 
+import (
+	"context"
 	"fmt"
+	"log"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
+	"github.com/satori/go.uuid"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
-	"os"
-	"log"
-	"time"
-	"context"
+	"golang.org/x/crypto/bcrypt"
+)
+
+const (
+	DbName ="ChuksLibrary"
+	TaskCollection = "library"
+	BookCollection = "books"
+	jwtSecret ="secretname"
+
 )
 type Book struct{
-	Title string `json:"title"`
-	Author string `json:"author"`
-	Year int `json:"year"`
-	Category string `json:"category"`
+	Title  		string `json:"title" bson:"title"`
+	Author 		string `json:"author" bson:"author"`
+	Email  		string `json:"email" bson:"email"`
+	Password 	string `json:"-,oimtempty" bson:"password"`
+	Ts   		time.Time `json:"timestamp" bson:"timestamp"`
+
 }
-var Books []Book
+
+type Task struct {
+	ID 				string 		`json:"id"`
+	Owner			string 		`json:"owner"`
+	Name 			string 		`json:"name"`
+	Description		string 		`json:"description"`
+	Ts				time.Time 	`json:"timestamp"`
+}
+
+type Claim struct {
+	BookId string `json:"book_id"`
+	jwt.StandardClaims 
+}
+
+
 var dbClient *mongo.Client 
 
 func main(){
@@ -41,11 +70,13 @@ func main(){
 
 	router := gin.Default()
 
-	router.POST("/createnewBook", createNewBook)
+	router.POST("/createTask", createTaskHandler)
 
-	router.GET("/getBook/:title", getSingleBook)
+	router.GET("/getTask/:title", getSingleBook)
 
 	router.GET("/getAllBooks", getAllBooks)
+
+	router.GET("/getTasks", getAllTasksHandler)
 
 	router.PATCH("/updateABook/:title", updateABook)
 
@@ -59,31 +90,68 @@ func main(){
 
 
 }
+func welcomeHandler (c *gin.Context) {
+	c.JSON(200, gin.H{
+		"message":"welcome to task manger API",
+	})
+}
 
-func createNewBook (c *gin.Context){
-	var book Book
+func createTaskHandler (c *gin.Context){
+	authorization :=c.Request.Header.Get("Authorization")
+	fmt.Println(authorization)
 
-	err := c.ShouldBindJSON(&book)
+	jwtToken:= ""
+
+			sp := strings.Split(authorization, " ")
+			if len(sp) > 1{
+				jwtToken = sp[1]
+			}
+
+	claims	:= &Claim{}
+	keyFunc := func (token *jwt.Token)(i interface{}, e error)  {
+			return [] byte(jwtSecret), nil
+	}
+
+	token, err := jwt.ParseWithClaims(jwtToken,claims, keyFunc)
+	if !token.Valid {
+		c.JSON(400, gin.H{
+			"error" : "invalid jwt token",
+		})
+		return 
+	}
+	var taskReq Task
+
+
+	err = c.ShouldBindJSON(&taskReq)
 	if err != nil{
 		c.JSON(400,gin.H{
 			"error": "invalid data request",
 		})
 		return
 	}
-	//create database and collection on mongodb compass later
-	_, err = dbClient.Database("ChuksLibrary").Collection("ChuksBooks").InsertOne(context.Background(), book)
+	
+	taskId := uuid.NewV4().String()
+
+	task := Task{
+		ID: taskId,
+		Owner: claims.BookId,
+		Name: taskReq.Name,
+		Description: taskReq.Description,
+		Ts: time.Now(),
+	}
+		_, err = dbClient.Database(DbName).Collection(TaskCollection).InsertOne(context.Background(), task)
 
 	if err !=nil {
-		fmt.Println("error saving book", err)
+		fmt.Println("error saving task", err)
 		c.JSON(500, gin.H{
-			"error": "Could not process request, coould not save new book",
+			"error": "Could not process request, coould not save new task",
 		})
 		return 
 	} 
 
 	c.JSON(200, gin.H{
 		"message": "new book has sucessfully been created",
-		"data": book,
+		"data": task,
 	})
 }
 func getSingleBook( c *gin.Context) {
@@ -114,7 +182,7 @@ func getAllBooks (c *gin.Context) {
 
 	var Books []Book
 
-	cursor, err := dbClient.Database("ChuksLibrary").Collection("ChuksBooks").Find(context.Background(), bson.M{})
+	cursor, err := dbClient.Database(DbName).Collection("ChuksBooks").Find(context.Background(), bson.M{})
 
 	if err != nil{
 		c.JSON(500, gin.H{
@@ -133,6 +201,56 @@ func getAllBooks (c *gin.Context) {
 	c.JSON(200, gin.H{
 		"message":"Welcome reader",
 		"data": Books,
+	})
+}
+func  getAllTasksHandler(c *gin.Context){
+	authorization := c.Request.Header.Get("Authorization")
+	if authorization == "" {
+		c.JSON(401, gin.H{
+			"error" : "auth token required",
+		})
+		return
+	}
+	jwtToken := ""
+	sp := strings.Split(authorization, " ")
+	if len(sp) > 1{
+		jwtToken = sp[1]
+	}
+	claims := &Claim{}
+	keyFunc := func(token *jwt.Token) (i interface{}, e error) {
+			return []byte(jwtSecret), nil 
+	}
+
+	token, err := jwt.ParseWithClaims(jwtToken, claims, keyFunc)
+	if !token.Valid {
+		c.JSON(401, gin.H{
+			"error": "invalid jwt token",
+		})
+		return 
+	}
+	var tasks []Task
+	query := bson.M{
+		"owner": claims.BookId,
+	}
+
+	cursor, err :=dbClient.Database(DbName).Collection("ChuksBooks").Find(context.Background(), query)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"error": "Could not process request, could get task",
+		})
+		return 
+	}
+	err = cursor.All(context.Background(), &tasks)
+	if err != nil{
+		c.JSON(500, gin.H{
+			"error": "Could not process request, could get task",
+		})
+		return 
+	}
+	
+	c.JSON(200, gin.H{
+		"message": "success",
+		"data": tasks,
 	})
 }
 
@@ -158,12 +276,11 @@ func updateABook(c *gin.Context){
 		"$set": bson.M{
 			"title":book.Title,
 			"author":book.Author,
-			"category":book.Category,
-			"year":book.Year,
+			
 		},
 	}
 	// get  database name from mongodb compass
-	_,err = dbClient.Database("ChuksLibrary").Collection("ChuksBooks").UpdateOne(context.Background(),filterQuery,updateQuery)
+	_,err = dbClient.Database(DbName).Collection("ChuksBooks").UpdateOne(context.Background(),filterQuery,updateQuery)
 	if err !=nil {
 		c.JSON(500, gin.H{
 			"error":"could not process request, database has not been updated",
@@ -183,7 +300,7 @@ func deleteABook (c *gin.Context){
 	query:= bson.M{
 		"title": title,
 	}
-	_, err :=dbClient.Database("ChuksLibrary").Collection("ChuksBooks").DeleteOne(context.Background(), query)
+	_, err :=dbClient.Database(DbName).Collection("ChuksBooks").DeleteOne(context.Background(), query)
 	if err != nil{
 			c.JSON(500, gin.H{
 				"error":"could not process command, Book has not been deleted",
