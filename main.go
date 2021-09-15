@@ -82,6 +82,10 @@ func main(){
 
 	router.DELETE("/deleteABook/:title", deleteABook)
 
+	router.POST("/login", loginHandler)
+
+	router.POST("/signup", signUpHandler)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "3000"
@@ -233,7 +237,7 @@ func  getAllTasksHandler(c *gin.Context){
 		"owner": claims.BookId,
 	}
 
-	cursor, err :=dbClient.Database(DbName).Collection("ChuksBooks").Find(context.Background(), query)
+	cursor, err :=dbClient.Database(DbName).Collection(TaskCollection).Find(context.Background(), query)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"error": "Could not process request, could get task",
@@ -310,5 +314,134 @@ func deleteABook (c *gin.Context){
 	c.JSON(200,gin.H{
 		"message":"Book has been deleted",
 
+	})
+}
+func loginHandler (c *gin.Context) {
+	loginReq := struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	} {}
+
+	err := c.ShouldBindJSON(&loginReq)
+	if err != nil {
+		c.JSON(400, gin.H{
+			"error": "invalid request data",
+		})
+		return 
+	}
+
+	var book Book
+	query := bson.M{ 
+		"email": loginReq.Email,
+	}
+
+	err = dbClient.Database(DbName).Collection("ChuksLibrary").FindOne(context.Background(),query).Decode(&book)
+	if err !=nil {
+		fmt.Printf("error getting book from db: %v\n", err)
+		c.JSON(500, gin.H{
+			"error":"could not process request, could not get book",
+		})
+		return
+	}
+	err = bcrypt.CompareHashAndPassword([]byte(book.Password),[]byte(loginReq.Password))
+	if err !=nil {
+		fmt.Printf("error getting book from db: %v\n", err)
+		c.JSON(500, gin.H{
+			"error":"invalid login details",
+		})
+		return
+	}
+	claims :=&Claim{
+		BookId: book.Title,
+		StandardClaims: jwt.StandardClaims{
+			IssuedAt:  time.Now().Unix(),
+			ExpiresAt: time.Now().Add(time.Hour * 1).Unix(),
+		},
+	}
+
+	token :=jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	jwtTokenString, err := token.SignedString([]byte(jwtSecret))
+
+	c.JSON(200, gin.H{
+		"message": "sign up successful",
+		"token": jwtTokenString,
+		"data":    book,
+	})
+}
+
+func signUpHandler (c *gin.Context){
+
+	type SignupRequest struct {
+		Name     string `json:"name"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	var signupReq SignupRequest
+
+	err := c.ShouldBindJSON(&signupReq)
+	if err != nil {
+		c.JSON(400, gin.H{
+			"error": "invalid request data",
+		})
+		return
+	}
+
+	query := bson.M {
+		"email": signupReq.Email,
+	}
+	count, err := dbClient.Database(DbName).Collection("ChuksLibrary").CountDocuments(context.Background(), query)
+
+	if err != nil {
+		fmt.Println("error searching for book: ", err)
+
+		c.JSON(500, gin.H{
+			"error": "Could not process request, please try again later",
+		})
+		return
+	}
+
+	if count > 0 {
+		c.JSON(500, gin.H{
+			"error": "Email already exits, please use a different email",
+		})
+		return
+	}
+
+	bytes, err := bcrypt.GenerateFromPassword([]byte(signupReq.Password), bcrypt.DefaultCost)
+	hashPassword := string(bytes)
+
+	bookTitle := uuid.NewV4().String()
+
+	book := Book {
+		Title: bookTitle,
+		Author: signupReq.Name,
+		Email:signupReq.Email,
+		Password:hashPassword,
+		Ts: time.Now(),
+	}
+	_, err = dbClient.Database(DbName).Collection("ChuksLibrary").InsertOne(context.Background(), book)
+	if err != nil {
+		fmt.Println("error saving book", err)
+
+		c.JSON(500, gin.H{
+			"error": "Could not process request, could not save book",
+		})
+		return
+	}
+	claims :=&Claim{
+		BookId: book.Title,
+		StandardClaims: jwt.StandardClaims{
+			IssuedAt: time.Now().Unix(),
+			ExpiresAt: time.Now().Add(time.Hour *1).Unix(),
+		},
+	}
+	
+	token:= jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	jwtTokenString, err:= token.SignedString([]byte(jwtSecret))
+
+	c.JSON(200, gin.H{
+		"message": "sign up successful",
+		"token": jwtTokenString,
+		"data":    book,
 	})
 }
